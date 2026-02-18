@@ -28,33 +28,53 @@ Everything lives in `main.py`.
 
 ## CLI
 
+Three subcommands, each targeting a different refactoring concern:
+
 ```
-python main.py <root> [--min-imports N] [--min-depth D] [--top N] [--no-importers]
+python main.py hot  <root> [--min-imports N] [--min-depth D] [--top N] [--no-importers]
+python main.py dead <root> [--top N]
+python main.py cold <root> [--max-imports N] [--min-depth D] [--top N] [--no-importers]
 ```
 
-| Flag | Default | Meaning |
+| Subcommand | Question answered | Default filters |
 |---|---|---|
-| `root` | (required) | Directory to analyze |
-| `--min-imports` | 2 | Only show modules imported by at least N files |
-| `--min-depth` | 1 | Only show modules at least N directory levels deep |
-| `--top` | 20 | Max rows to display |
-| `--no-importers` | off | Suppress the per-row "imported by" block |
+| `hot` | Widely imported but deeply nested — promote these | `--min-imports 2`, `--min-depth 1` |
+| `dead` | Never imported anywhere — delete these | `--top 50` |
+| `cold` | Barely imported — inline or consolidate these | `--max-imports 3`, `--min-depth 0` |
 
 ---
 
-## Output format
+## Output formats
 
+**`hot`** — scored table, sorted by `depth * import_count` descending:
 ```
 Score  Depth  Imports  Module                  File
 ------------------------------------------------------------
    12      3        4  services.core.engine    services/core/engine.py
-                         <- imported by:
-                            services/api/handler.py
-                            tests/test_core.py
+                       <- imported by:
+                          services/api/handler.py
+                          tests/test_core.py
 ```
 
-Column widths are dynamic (computed from data). With `--no-importers`, rows are
-contiguous (no blank lines between them).
+**`dead`** — simple table sorted by depth descending, then name:
+```
+Depth  Module                File
+--------------------------------------------
+    2  pkg.legacy.orphan     pkg/legacy/orphan.py
+    1  pkg.utils             pkg/utils/__init__.py
+```
+
+**`cold`** — table sorted by import count ascending, then depth descending:
+```
+Depth  Imports  Module             File
+---------------------------------------------
+    2        1  pkg.utils.helpers  pkg/utils/helpers.py
+                <- imported by:
+                   services/api/views.py
+```
+
+All column widths are dynamic. `--no-importers` suppresses the indented block and
+blank lines between rows (available for `hot` and `cold`).
 
 ---
 
@@ -73,8 +93,12 @@ Functions are listed in dependency order (callers below callees).
 | `_handle_ast_import_from(node, current_module, known_modules, imported)` | Dispatches absolute vs. relative `from ... import ...` |
 | `parse_file_imports(filepath, root, known_modules)` | AST-walks one file; returns `set[str]` of resolved module names; warns on `SyntaxError`/`OSError` |
 | `analyze(root)` | Orchestrates everything; returns `list[dict]` with keys below |
-| `format_results(results, show_importers)` | Renders the ranked table to stdout |
-| `main()` | argparse entry point |
+| `resolve_root(path_str)` | Resolves and validates a directory path; exits with error if invalid |
+| `format_hot_results(results, show_importers)` | Renders Score/Depth/Imports/Module/File table |
+| `format_dead_results(results)` | Renders Depth/Module/File table for never-imported modules |
+| `format_cold_results(results, show_importers)` | Renders Depth/Imports/Module/File table with importers |
+| `cmd_hot(args)` / `cmd_dead(args)` / `cmd_cold(args)` | Subcommand dispatch — filter, sort, format |
+| `main()` | argparse entry point with subparsers |
 
 ### Result dict shape (from `analyze`)
 
@@ -133,18 +157,23 @@ not in registry, falls back to attributing the import to `pkg` itself.
 ## How to run / test
 
 ```bash
-# Smoke test (expect "No modules matched the criteria." on this repo)
-python3 main.py .
+# Hot: widely imported but deeply nested (promote candidates)
+python3 main.py hot /path/to/project
+python3 main.py hot /path/to/project --min-imports 3 --top 10 --no-importers
 
-# Real codebase
-python3 main.py /path/to/project --min-imports 3 --top 10
+# Dead: never imported anywhere (deletion candidates)
+python3 main.py dead /path/to/project
 
-# Suppress importer details
-python3 main.py /path/to/project --no-importers
-
-# Lower thresholds to see all nested modules
-python3 main.py /path/to/project --min-imports 1 --min-depth 0
+# Cold: barely imported (inline or consolidate candidates)
+python3 main.py cold /path/to/project
+python3 main.py cold /path/to/project --max-imports 1   # only single-importer modules
 ```
+
+**Note on dead modules:** `__init__.py`-backed entries (e.g., `pkg.core`) appear
+as dead when no file explicitly imports the package by name. They may still be
+required for the package structure — check before deleting. Entry-point scripts
+(`top.py`, `manage.py`, etc.) at depth 0 will always appear dead since nothing
+imports them; these are expected and can be ignored.
 
 ---
 
